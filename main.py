@@ -6,6 +6,8 @@ import json
 import random
 import asyncio
 import aiohttp
+import re
+from datetime import timedelta
 from collections import deque
 from dotenv import load_dotenv
 
@@ -28,22 +30,34 @@ def save_config(config):
 
 
 # ============================================================
+#  MODERATION HELPER: PARSE DURATION
+# ============================================================
+def parse_duration(duration_str: str):
+    """Converts 10m, 2h, 1d into seconds."""
+    if not duration_str:
+        return None
+    match = re.match(r"(\d+)([smhd])", duration_str.lower())
+    if not match:
+        return None
+    amount, unit = match.groups()
+    amount = int(amount)
+    if unit == 's': return amount
+    if unit == 'm': return amount * 60
+    if unit == 'h': return amount * 3600
+    if unit == 'd': return amount * 86400
+    return None
+
+
+# ============================================================
 #  AI CHAT ENGINE (ModelGo Configuration)
 # ============================================================
 MODELGO_API_KEY = os.environ.get("MODELGO_API_KEY")
-
-# ModelGo's OpenAI-compatible endpoint
 MODELGO_URL     = "https://api.modelgo.ai/v1/chat/completions"
+MODELGO_MODEL   = "gpt-4o-mini" # Change if your ModelGo dashboard uses a different ID
 
-# IMPORTANT: Choose a model from your ModelGo dashboard. 
-# Example names: "gpt-4o", "claude-3-5-sonnet", "gpt-4o-mini"
-# If this specific model fails, check your ModelGo console for a valid model ID.
-MODELGO_MODEL   = "gpt-4o-mini" 
-
-_chat_history: dict[int, deque] = {}       # channel_id -> deque of msgs
+_chat_history: dict[int, deque] = {}       
 _HISTORY_TURNS = 6
-_last_mention_reply: dict[int, float] = {} # user_id -> timestamp
-
+_last_mention_reply: dict[int, float] = {} 
 
 def _system_prompt(message: discord.Message) -> str:
     guild_name = message.guild.name if message.guild else "a server"
@@ -55,15 +69,13 @@ def _system_prompt(message: discord.Message) -> str:
         "Be casual, warm, and human. Use short replies (1-3 sentences max). "
         "Use emojis occasionally but not every message. "
         "Never mention you are an AI or language model unless directly asked. "
-        "If someone asks about verification, tell them to click the Verify button on the panel. "
+        "If someone asks about verification, tell them to click the Verify button. "
         "If someone asks for admin help, tell them to ping a moderator. "
         "Never use markdown headers or bullet lists — chat like a real person."
     )
 
-
 async def get_ai_reply(text: str, message: discord.Message) -> str:
     if not MODELGO_API_KEY:
-        print("[AI] No MODELGO_API_KEY found. Using fallback.")
         return generate_fallback_reply(text, message)
 
     channel_id = message.channel.id
@@ -105,40 +117,15 @@ async def get_ai_reply(text: str, message: discord.Message) -> str:
         print(f"[AI] Error: {e}")
         return generate_fallback_reply(text, message)
 
-
-# ============================================================
-#  FALLBACK REPLIES (if no API key / AI fails)
-# ============================================================
 def generate_fallback_reply(text: str, message: discord.Message) -> str:
     name = message.author.display_name
     t = text.strip().lower()
-
-    if not t:
-        return random.choice([f"Hey {name}! What's up? 👋", "You rang? 👀", "Yes? How can I help?"])
-    if any(w in t for w in ["hi", "hello", "hey", "yo", "sup"]):
-        return random.choice([f"Hey {name}! 👋", "Hello! What can I do for you?", "Heyyy!"])
-    if any(w in t for w in ["thank", "thx", "ty", "appreciate"]):
-        return random.choice(["You're welcome! 😊", "Anytime!", "No problem at all!"])
-    if "how are you" in t or "how r u" in t:
-        return "Doing great, thanks! How about you? 😄"
-    if "help" in t or "how do i" in t:
-        return "Happy to help! If you need server access, click **Verify**. Admins use `/setup`."
-    if any(w in t for w in ["bye", "cya", "later", "goodbye"]):
-        return random.choice(["See ya! 👋", "Take care!", "Later!"])
-    if any(w in t for w in ["lol", "lmao", "haha", "😂"]):
-        return random.choice(["Haha glad you found that funny 😄", "Lol right? 😂"])
-    if "?" in t:
-        return random.choice([
-            "Good question! An admin might know better than me 🤔",
-            "Hmm, not sure on that one — worth asking a mod!",
-        ])
-    return random.choice([
-        "Gotcha! Tell me more?",
-        "Interesting! What else is on your mind?",
-        "Haha, fair enough 😄",
-        "I'm all ears 👂",
-        "Sounds good to me!",
-    ])
+    if not t: return f"Hey {name}! What's up? 👋"
+    if any(w in t for w in ["hi", "hello", "hey"]): return f"Hey {name}! 👋"
+    if any(w in t for w in ["thank", "thx", "ty"]): return "You're welcome! 😊"
+    if "how are you" in t: return "Doing great, thanks! How about you? 😄"
+    if "?" in t: return "Good question! An admin might know better 🤔"
+    return "Gotcha! Tell me more? 👂"
 
 
 # ============================================================
@@ -148,50 +135,29 @@ class VerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Verify / Unverify",
-                       style=discord.ButtonStyle.primary,
-                       custom_id="verify_button")
-    async def verify_button(self, interaction: discord.Interaction,
-                            button: discord.ui.Button):
+    @discord.ui.button(label="Verify / Unverify", style=discord.ButtonStyle.primary, custom_id="verify_button")
+    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = load_config()
         guild_id = str(interaction.guild_id)
-
         if guild_id not in config:
-            await interaction.response.send_message(
-                "Verification is not set up for this server. Contact an admin.",
-                ephemeral=True)
-            return
+            return await interaction.response.send_message("Verification not set up. Contact an admin.", ephemeral=True)
 
         role = interaction.guild.get_role(config[guild_id])
         if not role:
-            await interaction.response.send_message(
-                "The verified role no longer exists. Contact an admin.",
-                ephemeral=True)
-            return
+            return await interaction.response.send_message("Verified role no longer exists. Contact an admin.", ephemeral=True)
 
         if role in interaction.user.roles:
             try:
                 await interaction.user.remove_roles(role)
-                await interaction.response.send_message(
-                    "✅ You have been unverified. The role has been removed.",
-                    ephemeral=True)
+                await interaction.response.send_message("✅ You have been unverified.", ephemeral=True)
             except discord.Forbidden:
-                await interaction.response.send_message(
-                    "I don't have permission to remove this role. "
-                    "My bot role must be higher than the Verified role.",
-                    ephemeral=True)
+                await interaction.response.send_message("I don't have permission to remove this role. (My role must be higher).", ephemeral=True)
         else:
             try:
                 await interaction.user.add_roles(role)
-                await interaction.response.send_message(
-                    "✅ You have been successfully verified! "
-                    "You can now see the rest of the server.",
-                    ephemeral=True)
+                await interaction.response.send_message("✅ You have been successfully verified!", ephemeral=True)
             except discord.Forbidden:
-                await interaction.response.send_message(
-                    "I don't have permission to give you this role. "
-                    "My bot role must be higher than the Verified role.",
-                    ephemeral=True)
+                await interaction.response.send_message("I don't have permission to give this role. (My role must be higher).", ephemeral=True)
 
 
 # ============================================================
@@ -199,8 +165,9 @@ class VerifyView(discord.ui.View):
 # ============================================================
 class VerifyBot(commands.Bot):
     def __init__(self):
+        # THIS LINE IS WHAT MAKES "." WORK! It accepts "!", ".", and @mentions
         super().__init__(
-            command_prefix="!",
+            command_prefix=commands.when_mentioned_or("!", "."),
             intents=discord.Intents.all(),
             status=discord.Status.online,
         )
@@ -217,8 +184,7 @@ bot = VerifyBot()
 async def on_ready():
     print("=" * 55)
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
-    print(f"🧠 AI backend: {'ModelGo (live)' if MODELGO_API_KEY else 'Fallback (no MODELGO_API_KEY)'}")
-    print(f"🌐 Servers: {len(bot.guilds)}")
+    print(f"🧠 AI backend: {'ModelGo (live)' if MODELGO_API_KEY else 'Fallback (no API KEY)'}")
     print("=" * 55)
 
 
@@ -230,8 +196,10 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
+    # This allows .commands to work!
     await bot.process_commands(message)
 
+    # AI logic
     if bot.user not in message.mentions:
         return
 
@@ -243,11 +211,10 @@ async def on_message(message: discord.Message):
     text = message.content
     for m in (f"<@{bot.user.id}>", f"<@!{bot.user.id}>"):
         text = text.replace(m, "")
-    text = text.strip()
-
+    
     async with message.channel.typing():
         await asyncio.sleep(random.uniform(0.6, 1.4))
-        reply = await get_ai_reply(text, message)
+        reply = await get_ai_reply(text.strip(), message)
 
     try:
         await message.reply(reply, mention_author=False)
@@ -256,61 +223,158 @@ async def on_message(message: discord.Message):
 
 
 # ============================================================
-#  SLASH COMMANDS
+#  MODERATION COMMANDS (Works with . and /)
 # ============================================================
-@bot.tree.command(name="setup",
-                  description="Set up the verification message in this channel.")
-@app_commands.describe(role="The role users will get when they verify.")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup_verify(interaction: discord.Interaction, role: discord.Role):
-    await interaction.response.defer(ephemeral=True)
+@bot.hybrid_command(name="mute", description="Timeout a member.")
+@commands.has_permissions(moderate_members=True)
+@commands.bot_has_permissions(moderate_members=True)
+async def mute_cmd(ctx: commands.Context, member: discord.Member, duration: str = "10m", *, reason: str = "No reason provided"):
+    seconds = parse_duration(duration)
+    if not seconds:
+        return await ctx.send("❌ Invalid duration format. Use `s`, `m`, `h`, or `d` (e.g., `10m`, `1h`, `2d`).", ephemeral=True)
+    
+    if member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send("❌ I cannot mute this user because their role is higher than or equal to mine.", ephemeral=True)
 
+    try:
+        await member.timeout(timedelta(seconds=seconds), reason=reason)
+        await ctx.send(f"🔇 **{member.mention}** has been muted for **{duration}**.\n**Reason:** {reason}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to mute: {e}")
+
+
+@bot.hybrid_command(name="unmute", description="Remove a timeout from a member.")
+@commands.has_permissions(moderate_members=True)
+@commands.bot_has_permissions(moderate_members=True)
+async def unmute_cmd(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+    if not member.is_timed_out():
+        return await ctx.send(f"❌ **{member.name}** is not currently muted.")
+        
+    if member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send("❌ I cannot unmute this user because their role is higher than or equal to mine.", ephemeral=True)
+
+    try:
+        await member.timeout(None, reason=reason)
+        await ctx.send(f"🔊 **{member.mention}** has been unmuted.\n**Reason:** {reason}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to unmute: {e}")
+
+
+@bot.hybrid_command(name="kick", description="Kick a member from the server.")
+@commands.has_permissions(kick_members=True)
+@commands.bot_has_permissions(kick_members=True)
+async def kick_cmd(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+    if member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send("❌ I cannot kick this user because their role is higher than or equal to mine.", ephemeral=True)
+
+    try:
+        await member.kick(reason=reason)
+        await ctx.send(f"👢 **{member.name}** has been kicked.\n**Reason:** {reason}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to kick: {e}")
+
+
+async def unban_later(guild: discord.Guild, user: discord.User, seconds: int):
+    await asyncio.sleep(seconds)
+    try:
+        await guild.unban(user, reason="Temporary ban expired.")
+        print(f"Unbanned {user.name} after {seconds} seconds.")
+    except Exception as e:
+        print(f"Failed to unban {user.name}: {e}")
+
+
+@bot.hybrid_command(name="ban", description="Ban a member from the server.")
+@commands.has_permissions(ban_members=True)
+@commands.bot_has_permissions(ban_members=True)
+async def ban_cmd(ctx: commands.Context, member: discord.User, duration: str = None, *, reason: str = "No reason provided"):
+    if isinstance(member, discord.Member) and member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send("❌ I cannot ban this user because their role is higher than or equal to mine.", ephemeral=True)
+
+    try:
+        await ctx.guild.ban(member, reason=reason)
+        
+        if duration:
+            seconds = parse_duration(duration)
+            if not seconds:
+                return await ctx.send(f"🔨 **{member.name}** has been banned permanently (invalid duration format given).\n**Reason:** {reason}")
+            
+            await ctx.send(f"🔨 **{member.name}** has been banned for **{duration}**.\n**Reason:** {reason}")
+            asyncio.create_task(unban_later(ctx.guild, member, seconds))
+        else:
+            await ctx.send(f"🔨 **{member.name}** has been banned permanently.\n**Reason:** {reason}")
+            
+    except Exception as e:
+        await ctx.send(f"❌ Failed to ban: {e}")
+
+
+@bot.hybrid_command(name="unban", description="Unban a user from the server using their ID.")
+@commands.has_permissions(ban_members=True)
+@commands.bot_has_permissions(ban_members=True)
+async def unban_cmd(ctx: commands.Context, user: discord.User, *, reason: str = "No reason provided"):
+    try:
+        await ctx.guild.unban(user, reason=reason)
+        await ctx.send(f"🔓 **{user.name}** has been unbanned.\n**Reason:** {reason}")
+    except discord.NotFound:
+        await ctx.send(f"❌ **{user.name}** is not currently banned from this server.")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to unban: {e}")
+
+
+# ============================================================
+#  SETUP & OTHER COMMANDS
+# ============================================================
+@bot.hybrid_command(name="setup", description="Set up the verification message in this channel.")
+@app_commands.describe(role="The role users will get when they verify.")
+@commands.has_permissions(administrator=True)
+async def setup_verify(ctx: commands.Context, role: discord.Role):
     config = load_config()
-    config[str(interaction.guild_id)] = role.id
+    config[str(ctx.guild.id)] = role.id
     save_config(config)
 
     embed = discord.Embed(
         title="🛡️ Server Verification",
-        description=(
-            "To gain access to the rest of the server, please click the "
-            "button below.\n\n*Click again to unverify and hide the channels.*"
-        ),
+        description="To gain access to the rest of the server, please click the button below.\n\n*Click again to unverify and hide the channels.*",
         color=discord.Color.green(),
     )
     try:
-        await interaction.channel.send(embed=embed, view=VerifyView())
-        await interaction.followup.send(
-            f"✅ Verification panel set up! Users will receive the "
-            f"**{role.name}** role.", ephemeral=True)
+        await ctx.send(embed=embed, view=VerifyView())
+        await ctx.send(f"✅ Verification panel set up! Users will receive the **{role.name}** role.", ephemeral=True)
     except discord.Forbidden:
-        await interaction.followup.send(
-            "I don't have permission to send messages in this channel.",
-            ephemeral=True)
+        await ctx.send("❌ I don't have permission to send messages here.", ephemeral=True)
+
+@bot.hybrid_command(name="reset_chat", description="Clear the bot's chat memory for this channel.")
+async def reset_chat(ctx: commands.Context):
+    _chat_history.pop(ctx.channel.id, None)
+    await ctx.send("🧠 Chat memory cleared for this channel.", ephemeral=True)
 
 
-@bot.tree.command(name="reset_chat",
-                  description="Clear the bot's chat memory for this channel.")
-async def reset_chat(interaction: discord.Interaction):
-    _chat_history.pop(interaction.channel_id, None)
-    await interaction.response.send_message(
-        "🧠 Chat memory cleared for this channel.", ephemeral=True)
-
-
+# ============================================================
+#  ERROR HANDLERS
+# ============================================================
 @bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction,
-                               error: app_commands.AppCommandError):
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            "❌ You need Administrator permissions to use this command.",
-            ephemeral=True)
+        await interaction.response.send_message("❌ You need the correct permissions to use this command.", ephemeral=True)
     else:
         try:
-            await interaction.response.send_message(
-                f"❌ An error occurred: {error}", ephemeral=True)
-        except discord.InteractionResponded:
-            await interaction.followup.send(
-                f"❌ An error occurred: {error}", ephemeral=True)
-        print(f"Error: {error}")
+            await interaction.response.send_message(f"❌ Error: {error}", ephemeral=True)
+        except:
+            pass
+        print(f"Slash Cmd Error: {error}")
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You need the correct permissions to use this command.")
+    elif isinstance(error, commands.MemberNotFound) or isinstance(error, commands.UserNotFound):
+        await ctx.send("❌ I couldn't find that user. Try mentioning them or using their User ID.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ I don't have the permissions required to do that.")
+    elif isinstance(error, commands.CommandNotFound):
+        pass 
+    else:
+        await ctx.send(f"❌ Error: {error}")
+        print(f"Prefix Cmd Error: {error}")
 
 
 # ============================================================
