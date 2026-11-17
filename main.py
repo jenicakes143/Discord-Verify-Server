@@ -54,7 +54,12 @@ class VerifyView(discord.ui.View):
 
 class VerifyBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=discord.Intents.all())
+        # 👇 Added status=discord.Status.online to force it online 👇
+        super().__init__(
+            command_prefix="!", 
+            intents=discord.Intents.all(),
+            status=discord.Status.online
+        )
 
     async def setup_hook(self):
         # This ensures the button still works even if the bot restarts
@@ -73,6 +78,9 @@ async def on_ready():
 @app_commands.describe(role="The role users will get when they verify.")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_verify(interaction: discord.Interaction, role: discord.Role):
+    # Defer immediately so Discord doesn't time out
+    await interaction.response.defer(ephemeral=True)
+
     # Save the role for this specific server
     config = load_config()
     config[str(interaction.guild_id)] = role.id
@@ -84,8 +92,21 @@ async def setup_verify(interaction: discord.Interaction, role: discord.Role):
         color=discord.Color.green()
     )
     
-    await interaction.channel.send(embed=embed, view=VerifyView())
-    await interaction.response.send_message(f"Verification panel set up! Users will receive the **{role.name}** role.", ephemeral=True)
+    try:
+        await interaction.channel.send(embed=embed, view=VerifyView())
+        # Use followup.send since we deferred earlier
+        await interaction.followup.send(f"Verification panel set up! Users will receive the **{role.name}** role.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("I don't have permission to send messages in this channel.", ephemeral=True)
+
+# This catches errors so you can see them in Discord
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You need Administrator permissions to use this command.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"❌ An error occurred: {error}", ephemeral=True)
+        print(f"Error: {error}")
 
 # Run the bot
 token = os.environ.get("DISCORD_TOKEN")
