@@ -25,7 +25,8 @@ class VerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None) # timeout=None makes the button work forever
 
-    @discord.ui.button(label="Verify", style=discord.ButtonStyle.success, custom_id="verify_button")
+    # 👇 Changed label to "Verify / Unverify" 👇
+    @discord.ui.button(label="Verify / Unverify", style=discord.ButtonStyle.primary, custom_id="verify_button")
     async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = load_config()
         guild_id = str(interaction.guild_id)
@@ -42,19 +43,23 @@ class VerifyView(discord.ui.View):
             await interaction.response.send_message("The verified role no longer exists. Please contact an admin.", ephemeral=True)
             return
 
+        # 👇 NEW TOGGLE LOGIC 👇
         if role in interaction.user.roles:
-            await interaction.response.send_message("You are already verified!", ephemeral=True)
-            return
-
-        try:
-            await interaction.user.add_roles(role)
-            await interaction.response.send_message("✅ You have been successfully verified! You can now see the rest of the server.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to give you this role. Please ensure my bot role is higher than the Verified role.", ephemeral=True)
+            try:
+                await interaction.user.remove_roles(role)
+                await interaction.response.send_message("✅ You have been unverified. The role has been removed.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I don't have permission to remove this role. Please ensure my bot role is higher than the Verified role.", ephemeral=True)
+        else:
+            try:
+                await interaction.user.add_roles(role)
+                await interaction.response.send_message("✅ You have been successfully verified! You can now see the rest of the server.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I don't have permission to give you this role. Please ensure my bot role is higher than the Verified role.", ephemeral=True)
+        # 👆 NEW TOGGLE LOGIC 👆
 
 class VerifyBot(commands.Bot):
     def __init__(self):
-        # 👇 Added status=discord.Status.online to force it online 👇
         super().__init__(
             command_prefix="!", 
             intents=discord.Intents.all(),
@@ -88,13 +93,12 @@ async def setup_verify(interaction: discord.Interaction, role: discord.Role):
 
     embed = discord.Embed(
         title="🛡️ Server Verification",
-        description="To gain access to the rest of the server, please click the button below.",
+        description="To gain access to the rest of the server, please click the button below.\n\n*Click again to unverify and hide the channels.*",
         color=discord.Color.green()
     )
     
     try:
         await interaction.channel.send(embed=embed, view=VerifyView())
-        # Use followup.send since we deferred earlier
         await interaction.followup.send(f"Verification panel set up! Users will receive the **{role.name}** role.", ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send("I don't have permission to send messages in this channel.", ephemeral=True)
