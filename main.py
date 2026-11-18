@@ -344,10 +344,9 @@ async def unban_cmd(ctx: commands.Context, user: discord.User, *, reason: str = 
 @app_commands.describe(role="The role users will get when they verify.")
 @commands.has_permissions(administrator=True)
 async def setup_verify(ctx: commands.Context, role: discord.Role):
-    # 1. Defer immediately to prevent timeout
+    # 1. Defer privately so only the admin sees the "thinking..." state
     await ctx.defer(ephemeral=True)
 
-    # 2. Check if the role exists
     if not role:
         return await ctx.send("That role doesn't exist or I don't have permission to see it.")
 
@@ -362,9 +361,10 @@ async def setup_verify(ctx: commands.Context, role: discord.Role):
     )
     
     try:
-        # Send the panel publicly
-        await ctx.send(embed=embed, view=VerifyView())
-        # 3. Send the success message (works for both slash and prefix)
+        # 2. Send the panel PUBLICLY to the channel
+        await ctx.channel.send(embed=embed, view=VerifyView())
+        
+        # 3. Send the success message PRIVATELY to the admin
         await ctx.send(f"Verification panel set up! Users will receive the **{role.name}** role.")
     except discord.Forbidden:
         await ctx.send("I don't have permission to send messages here.")
@@ -373,11 +373,11 @@ async def setup_verify(ctx: commands.Context, role: discord.Role):
 @bot.hybrid_command(name="reset_chat", description="Clear the bot's chat memory for this channel.")
 async def reset_chat(ctx: commands.Context):
     _chat_history.pop(ctx.channel.id, None)
-    await ctx.send("Chat memory cleared for this channel.", ephemeral=True)
+    await ctx.send("Chat memory cleared for this channel.")
 
 
 # ============================================================
-#  ERROR HANDLERS (Catches invalid roles/users)
+#  ERROR HANDLERS
 # ============================================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
