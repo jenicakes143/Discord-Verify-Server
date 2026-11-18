@@ -344,6 +344,13 @@ async def unban_cmd(ctx: commands.Context, user: discord.User, *, reason: str = 
 @app_commands.describe(role="The role users will get when they verify.")
 @commands.has_permissions(administrator=True)
 async def setup_verify(ctx: commands.Context, role: discord.Role):
+    # 1. Defer immediately to prevent timeout ("The application did not respond")
+    await ctx.defer(ephemeral=True)
+
+    # 2. Check if the role exists
+    if not role:
+        return await ctx.followup.send("That role doesn't exist or I don't have permission to see it.", ephemeral=True)
+
     config = load_config()
     config[str(ctx.guild.id)] = role.id
     save_config(config)
@@ -353,11 +360,14 @@ async def setup_verify(ctx: commands.Context, role: discord.Role):
         description="To gain access to the rest of the server, please click the button below.\n\n*Click again to unverify and hide the channels.*",
         color=discord.Color.green(),
     )
+    
     try:
         await ctx.send(embed=embed, view=VerifyView())
-        await ctx.send(f"Verification panel set up! Users will receive the **{role.name}** role.", ephemeral=True)
+        # 3. Use followup.send after deferring
+        await ctx.followup.send(f"Verification panel set up! Users will receive the **{role.name}** role.", ephemeral=True)
     except discord.Forbidden:
-        await ctx.send("I don't have permission to send messages here.", ephemeral=True)
+        await ctx.followup.send("I don't have permission to send messages here.", ephemeral=True)
+
 
 @bot.hybrid_command(name="reset_chat", description="Clear the bot's chat memory for this channel.")
 async def reset_chat(ctx: commands.Context):
@@ -366,12 +376,14 @@ async def reset_chat(ctx: commands.Context):
 
 
 # ============================================================
-#  ERROR HANDLERS
+#  ERROR HANDLERS (Catches invalid roles/users)
 # ============================================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("You need the correct permissions to use this command.", ephemeral=True)
+    elif isinstance(error, app_commands.BadArgument) or isinstance(error, app_commands.CommandInvokeError):
+        await interaction.response.send_message("Invalid argument provided. Make sure you mentioned a valid user or role.", ephemeral=True)
     else:
         try:
             await interaction.response.send_message(f"Error: {error}", ephemeral=True)
@@ -383,8 +395,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("You need the correct permissions to use this command.")
-    elif isinstance(error, commands.MemberNotFound) or isinstance(error, commands.UserNotFound):
-        await ctx.send("I couldn't find that user. Try mentioning them or using their User ID.")
+    elif isinstance(error, commands.BadArgument) or isinstance(error, commands.MemberNotFound) or isinstance(error, commands.UserNotFound):
+        await ctx.send("Invalid argument provided. Make sure you mentioned a valid user or provided a valid role.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("I don't have the permissions required to do that.")
     elif isinstance(error, commands.CommandNotFound):
