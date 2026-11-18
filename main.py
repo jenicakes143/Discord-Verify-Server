@@ -344,29 +344,30 @@ async def unban_cmd(ctx: commands.Context, user: discord.User, *, reason: str = 
 @app_commands.describe(role="The role users will get when they verify.")
 @commands.has_permissions(administrator=True)
 async def setup_verify(ctx: commands.Context, role: discord.Role):
-    # 1. Defer immediately to prevent timeout ("The application did not respond")
+    # 1. Defer immediately to prevent timeout
     await ctx.defer(ephemeral=True)
 
     # 2. Check if the role exists
     if not role:
-        return await ctx.followup.send("That role doesn't exist or I don't have permission to see it.", ephemeral=True)
+        return await ctx.send("That role doesn't exist or I don't have permission to see it.")
 
     config = load_config()
     config[str(ctx.guild.id)] = role.id
     save_config(config)
 
     embed = discord.Embed(
-        title="Server Verification",
+        title="🛡️ Server Verification",
         description="To gain access to the rest of the server, please click the button below.\n\n*Click again to unverify and hide the channels.*",
         color=discord.Color.green(),
     )
     
     try:
+        # Send the panel publicly
         await ctx.send(embed=embed, view=VerifyView())
-        # 3. Use followup.send after deferring
-        await ctx.followup.send(f"Verification panel set up! Users will receive the **{role.name}** role.", ephemeral=True)
+        # 3. Send the success message (works for both slash and prefix)
+        await ctx.send(f"Verification panel set up! Users will receive the **{role.name}** role.")
     except discord.Forbidden:
-        await ctx.followup.send("I don't have permission to send messages here.", ephemeral=True)
+        await ctx.send("I don't have permission to send messages here.")
 
 
 @bot.hybrid_command(name="reset_chat", description="Clear the bot's chat memory for this channel.")
